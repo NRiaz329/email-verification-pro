@@ -99,7 +99,7 @@ def run_bulk_checks(emails: list, max_workers: int = 12) -> pd.DataFrame:
                     "mx_valid": False, "disposable": False, "role_based": False,
                     "free_provider": False, "smtp_deliverable": None,
                     "catch_all": None, "spf_present": False, "dmarc_present": False,
-                    "score": 0, "verdict": "Invalid",
+                    "blacklisted": False, "score": 0, "verdict": "Invalid",
                     "notes": [f"Error during check: {e}"],
                 }
             done += 1
@@ -122,6 +122,7 @@ def run_bulk_checks(emails: list, max_workers: int = 12) -> pd.DataFrame:
             "Catch-all": r["catch_all"],
             "SPF": r.get("spf_present", False),
             "DMARC": r.get("dmarc_present", False),
+            "Blacklisted": r.get("blacklisted", False),
             "Notes": "; ".join(r["notes"]),
         })
     result_df = pd.DataFrame(rows)
@@ -183,7 +184,8 @@ def render_single_email_tab():
         )
         st.markdown(
             f"**SPF record:** {bool_badge(result.get('spf_present'))} &nbsp;&nbsp; "
-            f"**DMARC record:** {bool_badge(result.get('dmarc_present'))}",
+            f"**DMARC record:** {bool_badge(result.get('dmarc_present'))} &nbsp;&nbsp; "
+            f"**On spam blacklist:** {bool_badge(result.get('blacklisted'), true_label='Yes', false_label='No')}",
             unsafe_allow_html=True,
         )
 
