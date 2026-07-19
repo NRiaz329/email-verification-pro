@@ -129,6 +129,29 @@ def is_disposable(domain: str) -> bool:
     return domain.lower() in get_disposable_domains()
 
 
+@lru_cache(maxsize=1)
+def smtp_port_reachable() -> bool:
+    """One-time check (cached for the process lifetime) of whether outbound
+    port 25 is reachable at all from this environment. Most cloud/free
+    hosting providers (Streamlit Community Cloud included) block outbound
+    port 25 entirely as an anti-spam measure -- if that's the case here,
+    every single SMTP deliverability check will fail instantly and
+    uniformly, which can look like "validating too fast" / not doing real
+    work. This lets the UI say that plainly instead of leaving it a mystery.
+    """
+    # Google's public MX host, just as a reachability probe -- we don't
+    # actually try to verify a mailbox here, only whether the TCP connection
+    # on port 25 can be established at all.
+    test_targets = [("aspmx.l.google.com", 25), ("alt1.aspmx.l.google.com", 25)]
+    for host, port in test_targets:
+        try:
+            with socket.create_connection((host, port), timeout=4):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _smtp_probe(mx_host: str, mail_from: str, rcpt_to: str):
     """Returns True/False/None (None = inconclusive, e.g. connection blocked
     or timed out -- very common on cloud hosts, whose IPs are widely
@@ -262,6 +285,14 @@ def full_check(email: str) -> dict:
         result["verdict"] = "Risky"
     elif deliverable is False:
         result["verdict"] = "Invalid"
+    elif deliverable is None:
+        # The one check that actually confirms a mailbox exists never ran
+        # (almost always because outbound port 25 is blocked by the hosting
+        # environment -- see smtp_port_reachable()). Giving this a "Valid"
+        # label would be dishonest: syntax + MX passing only means the
+        # *domain* can receive mail, not that this specific mailbox exists.
+        # Cap at "Unknown" no matter how high the rest of the score is.
+        result["verdict"] = "Unknown"
     elif result["score"] >= 80:
         result["verdict"] = "Valid"
     elif result["score"] >= 55:
