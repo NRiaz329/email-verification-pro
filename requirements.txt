@@ -1,0 +1,8 @@
+streamlit>=1.32
+pandas>=2.0
+numpy>=1.24
+dnspython>=2.4
+jellyfish>=1.0
+python-whois>=0.9
+requests>=2.31
+openpyxl>=3.1

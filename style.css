@@ -1,0 +1,29 @@
+/* Note: the original stylesheet targeted Streamlit's auto-generated
+   classes like `.css-18e3th9` / `.egzxvld2`. Those hashes are regenerated
+   on every Streamlit release, so they silently stop matching anything
+   after an upgrade. Using stable `data-testid` attributes instead so this
+   keeps working across Streamlit versions. */
+
+[data-testid="stAppViewBlockContainer"] {
+  padding-top: 2rem;
+  max-width: 900px;
+}
+
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+[data-testid="stMetric"] {
+  background-color: rgba(120, 120, 120, 0.08);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+}
+
+[data-testid="stMetricLabel"] {
+  font-size: 0.85rem;
+}
+
+h1 {
+  font-size: 1.9rem;
+}
+
+/* Path: static\style.css */
