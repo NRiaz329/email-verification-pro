@@ -199,6 +199,55 @@ def verify_email(email: str) -> bool:
     return bool(result)
 
 
+@lru_cache(maxsize=1024)
+def domain_catch_all_status(domain: str):
+    """Determines whether a domain accepts mail for any address at all
+    (catch-all), independent of any specific mailbox. Cached per domain so
+    that checking many addresses at the same domain in a bulk run only
+    pays this cost once -- both faster and more polite to the receiving
+    mail server than probing it three times per address in the list.
+    Returns True / False / None (undetermined)."""
+    mx_hosts = get_mx_records(domain)
+    if not mx_hosts:
+        return None
+
+    catch_all_votes = []
+    for _ in range(3):
+        random_local = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
+        fake_email = f"{random_local}@{domain}"
+        for host in mx_hosts:
+            vote = _smtp_probe(host, '', fake_email)
+            if vote is not None:
+                catch_all_votes.append(vote)
+                break
+
+    if not catch_all_votes:
+        return None
+    if all(catch_all_votes):
+        return True
+    if not any(catch_all_votes):
+        return False
+    return None  # probes disagreed -- genuinely ambiguous
+
+
+@lru_cache(maxsize=1024)
+def is_domain_blacklisted(domain: str) -> bool:
+    """Checks the domain against Spamhaus's free public Domain Block List
+    (DBL) via a plain DNS query -- no API key required. A domain that
+    resolves at <domain>.dbl.spamhaus.org is currently flagged for spam,
+    phishing, or malware association. This is a real, independent
+    reputation signal on top of everything else the tool checks.
+
+    Note: Spamhaus's public DNS mirror is rate-limited for high-volume /
+    commercial querying per their usage policy -- fine for interactive or
+    moderate bulk use, but don't hammer it with unattended mass queries.
+    """
+    query_domain = f"{domain}.dbl.spamhaus.org"
+    result = _resolve('A', query_domain)
+    # Any 127.0.1.x response means it's listed; NXDOMAIN (empty result) means clean.
+    return any(r.startswith('127.0.1.') for r in result)
+
+
 def verify_email_deliverability(email: str):
     """
     Returns (deliverable, catch_all):
@@ -224,30 +273,7 @@ def verify_email_deliverability(email: str):
     if deliverable is not True:
         return deliverable, None
 
-    # Probe several random mailboxes (not just one) to check for catch-all
-    # behaviour. A single probe can be thrown off by one flaky response;
-    # requiring the same outcome across multiple independent probes is a
-    # real accuracy improvement, not just extra latency for its own sake.
-    catch_all_votes = []
-    for _ in range(3):
-        random_local = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
-        fake_email = f"{random_local}@{domain}"
-        for host in mx_hosts:
-            vote = _smtp_probe(host, '', fake_email)
-            if vote is not None:
-                catch_all_votes.append(vote)
-                break
-
-    if not catch_all_votes:
-        catch_all_result = None
-    elif all(catch_all_votes):
-        catch_all_result = True
-    elif not any(catch_all_votes):
-        catch_all_result = False
-    else:
-        # Probes disagreed -- genuinely ambiguous, don't pretend certainty.
-        catch_all_result = None
-
+    catch_all_result = domain_catch_all_status(domain)
     return deliverable, catch_all_result
 
 
@@ -266,6 +292,7 @@ def full_check(email: str) -> dict:
         "catch_all": None,
         "spf_present": False,
         "dmarc_present": False,
+        "blacklisted": False,
         "score": 0,
         "verdict": "Invalid",
         "notes": [],
@@ -289,6 +316,7 @@ def full_check(email: str) -> dict:
     result["free_provider"] = is_free_provider(domain)
     result["spf_present"] = has_spf_record(domain)
     result["dmarc_present"] = has_dmarc_record(domain)
+    result["blacklisted"] = is_domain_blacklisted(domain)
 
     deliverable, catch_all = verify_email_deliverability(email)
     result["smtp_deliverable"] = deliverable
@@ -309,12 +337,14 @@ def full_check(email: str) -> dict:
         result["notes"].append("Domain has no SPF record -- weaker sign of a properly maintained mail setup.")
     if not result["dmarc_present"]:
         result["notes"].append("Domain has no DMARC record -- weaker sign of a properly maintained mail setup.")
+    if result["blacklisted"]:
+        result["notes"].append("Domain is currently listed on Spamhaus's Domain Block List (spam/phishing/malware association).")
 
     # --- Scoring (weights sum to 100) ---
     score = 0
-    score += 15  # syntax valid
-    score += 20  # mx valid
-    score += 0 if result["disposable"] else 15
+    score += 12  # syntax valid
+    score += 17  # mx valid
+    score += 0 if result["disposable"] else 10
     if deliverable is True and not catch_all:
         score += 25
     elif deliverable is True and catch_all:
@@ -323,12 +353,15 @@ def full_check(email: str) -> dict:
         score += 8  # unknown, not penalized as hard as a confirmed reject
     else:
         score += 0
-    score += 0 if result["role_based"] else 8
-    score += 8 if result["spf_present"] else 0
-    score += 9 if result["dmarc_present"] else 0
+    score += 0 if result["role_based"] else 6
+    score += 6 if result["spf_present"] else 0
+    score += 6 if result["dmarc_present"] else 0
+    score += 0 if result["blacklisted"] else 18
     result["score"] = min(100, score)
 
-    if result["disposable"]:
+    if result["blacklisted"]:
+        result["verdict"] = "Risky"
+    elif result["disposable"]:
         result["verdict"] = "Risky"
     elif deliverable is False:
         result["verdict"] = "Invalid"
