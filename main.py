@@ -3,7 +3,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import streamlit as st
-import whois
 
 import source_code as sc
 import disposable_domains
@@ -187,12 +186,19 @@ def render_single_email_tab():
 
         with st.expander("See Domain Information (WHOIS)"):
             try:
-                dm_info = whois.whois(result["domain"])
-                st.write("Registrar:", dm_info.registrar)
-                st.write("Server:", dm_info.whois_server)
-                st.write("Country:", dm_info.country)
-            except Exception:
-                st.error("Domain information retrieval failed.")
+                import whois  # imported here, not at module level, so a
+                               # missing/broken whois package can't crash
+                               # the entire app on startup
+            except ImportError:
+                st.info("WHOIS lookup isn't available in this environment (the `python-whois` package isn't installed). The rest of the tool works normally.")
+            else:
+                try:
+                    dm_info = whois.whois(result["domain"])
+                    st.write("Registrar:", dm_info.registrar)
+                    st.write("Server:", dm_info.whois_server)
+                    st.write("Country:", dm_info.country)
+                except Exception:
+                    st.error("Domain information retrieval failed (the WHOIS server may be blocking/rate-limiting this request).")
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +283,16 @@ def main():
     )
 
     render_sidebar()
+
+    if not sc.smtp_port_reachable():
+        st.warning(
+            "⚠️ Outbound SMTP (port 25) appears to be blocked in this hosting environment "
+            "(this is normal on Streamlit Community Cloud, Render, Railway, and most free "
+            "hosts — cloud providers block it by default to prevent spam). "
+            "That means the mailbox-existence check cannot run here: every result will show "
+            "'Unknown' for SMTP deliverability rather than a false 'Valid'. "
+            "Syntax, MX/DNS, disposable-domain, and role-based checks are unaffected and still fully accurate."
+        )
 
     t1, t2 = st.tabs(["Single Email", "Bulk Email Processing"])
     with t1:
