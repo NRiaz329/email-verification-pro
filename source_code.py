@@ -152,6 +152,28 @@ def smtp_port_reachable() -> bool:
     return False
 
 
+@lru_cache(maxsize=2048)
+def has_spf_record(domain: str) -> bool:
+    """SPF (Sender Policy Framework) is published as a TXT record. Its
+    presence is a real signal of a properly configured, legitimate mail
+    setup -- scam/throwaway domains frequently skip it."""
+    for rec in _resolve('TXT', domain):
+        if 'v=spf1' in rec.replace('"', '').lower():
+            return True
+    return False
+
+
+@lru_cache(maxsize=2048)
+def has_dmarc_record(domain: str) -> bool:
+    """DMARC lives at _dmarc.<domain> as a TXT record. Like SPF, its
+    presence indicates a domain that's serious about mail authentication
+    (harder for spoofers/disposable services to bother with)."""
+    for rec in _resolve('TXT', f'_dmarc.{domain}'):
+        if 'v=dmarc1' in rec.replace('"', '').lower():
+            return True
+    return False
+
+
 def _smtp_probe(mx_host: str, mail_from: str, rcpt_to: str):
     """Returns True/False/None (None = inconclusive, e.g. connection blocked
     or timed out -- very common on cloud hosts, whose IPs are widely
@@ -202,14 +224,29 @@ def verify_email_deliverability(email: str):
     if deliverable is not True:
         return deliverable, None
 
-    # Probe a random mailbox to check for catch-all behaviour.
-    random_local = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
-    fake_email = f"{random_local}@{domain}"
-    catch_all_result = None
-    for host in mx_hosts:
-        catch_all_result = _smtp_probe(host, '', fake_email)
-        if catch_all_result is not None:
-            break
+    # Probe several random mailboxes (not just one) to check for catch-all
+    # behaviour. A single probe can be thrown off by one flaky response;
+    # requiring the same outcome across multiple independent probes is a
+    # real accuracy improvement, not just extra latency for its own sake.
+    catch_all_votes = []
+    for _ in range(3):
+        random_local = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
+        fake_email = f"{random_local}@{domain}"
+        for host in mx_hosts:
+            vote = _smtp_probe(host, '', fake_email)
+            if vote is not None:
+                catch_all_votes.append(vote)
+                break
+
+    if not catch_all_votes:
+        catch_all_result = None
+    elif all(catch_all_votes):
+        catch_all_result = True
+    elif not any(catch_all_votes):
+        catch_all_result = False
+    else:
+        # Probes disagreed -- genuinely ambiguous, don't pretend certainty.
+        catch_all_result = None
 
     return deliverable, catch_all_result
 
@@ -227,6 +264,8 @@ def full_check(email: str) -> dict:
         "free_provider": False,
         "smtp_deliverable": None,
         "catch_all": None,
+        "spf_present": False,
+        "dmarc_present": False,
         "score": 0,
         "verdict": "Invalid",
         "notes": [],
@@ -248,6 +287,8 @@ def full_check(email: str) -> dict:
     result["disposable"] = is_disposable(domain)
     result["role_based"] = is_role_based(email)
     result["free_provider"] = is_free_provider(domain)
+    result["spf_present"] = has_spf_record(domain)
+    result["dmarc_present"] = has_dmarc_record(domain)
 
     deliverable, catch_all = verify_email_deliverability(email)
     result["smtp_deliverable"] = deliverable
@@ -264,21 +305,27 @@ def full_check(email: str) -> dict:
         result["notes"].append("Domain is a known disposable/temporary email provider.")
     if result["role_based"]:
         result["notes"].append("Looks like a role-based address (e.g. info@, support@) rather than a personal inbox.")
+    if not result["spf_present"]:
+        result["notes"].append("Domain has no SPF record -- weaker sign of a properly maintained mail setup.")
+    if not result["dmarc_present"]:
+        result["notes"].append("Domain has no DMARC record -- weaker sign of a properly maintained mail setup.")
 
-    # --- Scoring ---
+    # --- Scoring (weights sum to 100) ---
     score = 0
-    score += 20  # syntax valid
-    score += 25  # mx valid
+    score += 15  # syntax valid
+    score += 20  # mx valid
     score += 0 if result["disposable"] else 15
     if deliverable is True and not catch_all:
-        score += 30
+        score += 25
     elif deliverable is True and catch_all:
-        score += 15
+        score += 12
     elif deliverable is None:
-        score += 12  # unknown, not penalized as hard as a confirmed reject
+        score += 8  # unknown, not penalized as hard as a confirmed reject
     else:
         score += 0
-    score += 0 if result["role_based"] else 10
+    score += 0 if result["role_based"] else 8
+    score += 8 if result["spf_present"] else 0
+    score += 9 if result["dmarc_present"] else 0
     result["score"] = min(100, score)
 
     if result["disposable"]:
