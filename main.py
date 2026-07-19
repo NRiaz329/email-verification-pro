@@ -98,7 +98,8 @@ def run_bulk_checks(emails: list, max_workers: int = 12) -> pd.DataFrame:
                     "email": emails[idx], "syntax_valid": False, "domain": "",
                     "mx_valid": False, "disposable": False, "role_based": False,
                     "free_provider": False, "smtp_deliverable": None,
-                    "catch_all": None, "score": 0, "verdict": "Invalid",
+                    "catch_all": None, "spf_present": False, "dmarc_present": False,
+                    "score": 0, "verdict": "Invalid",
                     "notes": [f"Error during check: {e}"],
                 }
             done += 1
@@ -119,6 +120,8 @@ def run_bulk_checks(emails: list, max_workers: int = 12) -> pd.DataFrame:
             "Free Provider": r["free_provider"],
             "SMTP Deliverable": r["smtp_deliverable"],
             "Catch-all": r["catch_all"],
+            "SPF": r.get("spf_present", False),
+            "DMARC": r.get("dmarc_present", False),
             "Notes": "; ".join(r["notes"]),
         })
     result_df = pd.DataFrame(rows)
@@ -176,6 +179,11 @@ def render_single_email_tab():
             f"**SMTP deliverable:** {bool_badge(result['smtp_deliverable'])} &nbsp;&nbsp; "
             f"**Catch-all domain:** {bool_badge(result['catch_all'])} &nbsp;&nbsp; "
             f"**Free/consumer provider:** {bool_badge(result['free_provider'])}",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"**SPF record:** {bool_badge(result.get('spf_present'))} &nbsp;&nbsp; "
+            f"**DMARC record:** {bool_badge(result.get('dmarc_present'))}",
             unsafe_allow_html=True,
         )
 
